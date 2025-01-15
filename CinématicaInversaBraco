@@ -1,0 +1,69 @@
+#!usr/bin/env python3
+# -*- coding: utf-8 -*-
+import math
+from utils import *
+
+class InverseKinematicsArms:
+    def __init__(self, physical_parameters):
+        self.upper_arm_length = physical_parameters['upper_arm_length']
+        self.lower_arm_length = physical_parameters['lower_arm_length']
+        self.shoulder_pitch0 = physical_parameters['shoulder_pitch0']
+        self.elbow_pitch0 = physical_parameters['elbow_pitch0']
+        self.torso_to_left_shoulder = physical_parameters['torso_to_left_shoulder']
+        self.math_utils = MathUtils()
+
+    def compute_joints_targets_one_arm(self, x, y, z):
+        # Distância no plano yz
+        yz = math.sqrt(y ** 2 + z ** 2)
+        # Distância total do ombro à mão
+        c = math.sqrt(x ** 2 + y ** 2 + z ** 2)
+        # Comprimento dos segmentos do braço
+        a = self.upper_arm_length
+        b = self.lower_arm_length
+
+        # Verificar validade da lei dos cossenos
+        if (a ** 2 + b ** 2 - c ** 2) / (2.0 * a * b) > 1 or (a ** 2 + b ** 2 - c ** 2) / (2.0 * a * b) < -1:
+            print("Parâmetros quebram lei dos cossenos, valor=", (a ** 2 + b ** 2 - c ** 2) / (2.0 * a * b))
+            return {
+                'shoulder_pitch': 0,
+                'elbow_pitch': 0,
+                'shoulder_roll': 0
+            }
+
+        # Usar a lei dos cossenos para calcular os ângulos
+        gamma = math.acos((a ** 2 + b ** 2 - c ** 2) / (2.0 * a * b))  # Ângulo do cotovelo
+        beta = math.acos((a ** 2 + c ** 2 - b ** 2) / (2.0 * a * c))   # Ângulo do ombro
+
+        # Ajustar os ângulos para os ângulos base do robô
+        shoulder_pitch = -(math.atan2(x, yz) + beta) - self.shoulder_pitch0
+        elbow_pitch = math.pi - gamma - self.elbow_pitch0
+
+        # Calcular o ângulo de rotação lateral do ombro
+        shoulder_roll = -math.atan(y / z)
+
+        return {
+            'shoulder_pitch': shoulder_pitch,
+            'elbow_pitch': elbow_pitch,
+            'shoulder_roll': shoulder_roll
+        }
+
+    def compute_joints_targets(self, x_left, y_left, z_left, 
+                               x_right, y_right, z_right):
+        # Ajuste com base nas posições físicas do robô
+        x_left -= self.torso_to_left_shoulder[0]
+        y_left -= self.torso_to_left_shoulder[1]
+        x_right -= self.torso_to_left_shoulder[0]
+        y_right += self.torso_to_left_shoulder[1]
+
+        z_left -= self.torso_to_left_shoulder[2]
+        z_right -= self.torso_to_left_shoulder[2]
+
+        # Calcular os ângulos para ambos os braços
+        left_arm = self.compute_joints_targets_one_arm(x_left, y_left, z_left)
+        right_arm = self.compute_joints_targets_one_arm(x_right, y_right, z_right)
+
+        return {
+            'left_arm': left_arm,
+            'right_arm': right_arm
+        }
+
