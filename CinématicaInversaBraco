@@ -1,65 +1,76 @@
-#!/usr/bin/env python3
+#!usr/bin/env python3
 # -*- coding: utf-8 -*-
+import math
+from utils import *
 
-import rospy
-from std_msgs.msg import Float64, Float64MultiArray
-from sensor_msgs.msg import JointState
-from inverse_kinematics import InverseKinematicsArms
+class InverseKinematicsArms:
+    def __init__(self, physical_parameters):
+        self.upper_arm_length = physical_parameters['upper_arm_length']
+        self.lower_arm_length = physical_parameters['lower_arm_length']
+        self.shoulder_pitch0 = physical_parameters['shoulder_pitch0']
+        self.elbow_pitch0 = physical_parameters['elbow_pitch0']
+        self.torso_to_left_shoulder = physical_parameters['torso_to_left_shoulder']
+        self.joint_limits = physical_parameters.get('joint_limits', {})
+        self.math_utils = MathUtils()
 
-class ArmControlNode:
-    def __init__(self):
-        rospy.init_node('inverse_kinematics_arms_node')
+    def compute_joints_targets_one_arm(self, x, y, z):
+        yz = math.sqrt(y ** 2 + z ** 2)
+        c = math.sqrt(x ** 2 + y ** 2 + z ** 2)
+        a = self.upper_arm_length
+        b = self.lower_arm_length
 
-        self.publishers = {
-            'left_arm_pub': rospy.Publisher('/martha/left_arm/command', Float64MultiArray, queue_size=10),
-            'right_arm_pub': rospy.Publisher('/martha/right_arm/command', Float64MultiArray, queue_size=10),
+        if c > a + b:
+            return None
+
+        cos_gamma = (a ** 2 + b ** 2 - c ** 2) / (2.0 * a * b)
+        if not -1 <= cos_gamma <= 1:
+            return None
+
+        gamma = math.acos(cos_gamma)
+        beta = math.acos((a ** 2 + c ** 2 - b ** 2) / (2.0 * a * c))
+
+        shoulder_pitch = -(math.atan2(x, yz) + beta) - self.shoulder_pitch0
+        elbow_pitch = math.pi - gamma - self.elbow_pitch0
+
+        if z == 0:
+            shoulder_roll = math.pi / 2 if y > 0 else -math.pi / 2
+        else:
+            shoulder_roll = -math.atan(y / z)
+
+        shoulder_pitch = self.apply_joint_limits('shoulder_pitch', shoulder_pitch)
+        elbow_pitch = self.apply_joint_limits('elbow_pitch', elbow_pitch)
+        shoulder_roll = self.apply_joint_limits('shoulder_roll', shoulder_roll)
+
+        return {
+            'shoulder_pitch': shoulder_pitch,
+            'elbow_pitch': elbow_pitch,
+            'shoulder_roll': shoulder_roll
         }
 
-        rospy.Subscriber('/arm_coordinates_input', JointState, self.coordinates_callback)
+    def compute_joints_targets(self, x_left, y_left, z_left, 
+                               x_right, y_right, z_right):
+        x_left -= self.torso_to_left_shoulder[0]
+        y_left -= self.torso_to_left_shoulder[1]
+        x_right -= self.torso_to_left_shoulder[0]
+        y_right += self.torso_to_left_shoulder[1]
 
-        self.physical_parameters = self.load_physical_parameters()
-        self.inverse_kinematics = InverseKinematicsArms(self.physical_parameters)
+        z_left -= self.torso_to_left_shoulder[2]
+        z_right -= self.torso_to_left_shoulder[2]
 
-    def coordinates_callback(self, msg):
-        x_left, y_left, z_left = msg.position[:3]
-        x_right, y_right, z_right = msg.position[3:]
+        left_arm = self.compute_joints_targets_one_arm(x_left, y_left, z_left)
+        right_arm = self.compute_joints_targets_one_arm(x_right, y_right, z_right)
 
-        joints = self.inverse_kinematics.compute_joints_targets(x_left, y_left, z_left, 
-                                                                x_right, y_right, z_right)
-        if joints:
-            self.publish_angles(joints)
+        if left_arm is None or right_arm is None:
+            return None
 
-    def publish_angles(self, joints):
-        left_arm = joints['left_arm']
-        right_arm = joints['right_arm']
-
-        left_arm_msg = Float64MultiArray()
-        left_arm_msg.data = [left_arm['shoulder_pitch'], left_arm['shoulder_roll'], left_arm['elbow_pitch']]
-
-        right_arm_msg = Float64MultiArray()
-        right_arm_msg.data = [right_arm['shoulder_pitch'], right_arm['shoulder_roll'], right_arm['elbow_pitch']]
-
-        self.publishers['left_arm_pub'].publish(left_arm_msg)
-        self.publishers['right_arm_pub'].publish(right_arm_msg)
-
-    def load_physical_parameters(self):
-        parameters = {
-            'upper_arm_length': rospy.get_param('/arm_params/upper_arm_length', 0.15),
-            'lower_arm_length': rospy.get_param('/arm_params/lower_arm_length', 0.15),
-            'shoulder_pitch0': rospy.get_param('/arm_params/shoulder_pitch0', 0.0),
-            'elbow_pitch0': rospy.get_param('/arm_params/elbow_pitch0', 0.0),
-            'torso_to_left_shoulder': rospy.get_param('/arm_params/torso_to_left_shoulder', [0.05, 0.15, 0.3]),
-            'joint_limits': rospy.get_param('/arm_params/joint_limits', {}),
+        return {
+            'left_arm': left_arm,
+            'right_arm': right_arm
         }
-        rospy.loginfo(f"Loaded physical parameters: {parameters}")
-        return parameters
 
-    def spin(self):
-        rospy.spin()
-
-if __name__ == '__main__':
-    try:
-        node = ArmControlNode()
-        node.spin()
-    except rospy.ROSInterruptException:
-        pass
+    def apply_joint_limits(self, joint_name, angle):
+        limits = self.joint_limits.get(joint_name, None)
+        if limits:
+            min_limit, max_limit = limits
+            angle = max(min(angle, max_limit), min_limit)
+        return angle
